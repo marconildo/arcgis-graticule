@@ -1,0 +1,21 @@
+{
+  "name": "arcgis-graticule",
+  "version": "1.0.0",
+  "main": "src/arcgis.graticule.js",
+  "scripts": {
+    "test": "npm run lint",
+    "lint": "eslint src/arcgis.graticule.js",
+    "beautify": "uglifyjs src/arcgis.graticule.js -b --comments /iosphere/ > dist/arcgis.graticule.js",
+    "minify": "uglifyjs src/arcgis.graticule.js -c -m --comments /iosphere/ > dist/arcgis.graticule.min.js",
+    "prebuild": "mkdir dist",
+    "build": "npm run test && npm run beautify && npm run minify"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "description": "",
+  "devDependencies": {
+    "eslint": "^9.14.0",
+    "uglify-js": "^3.19.3"
+  }
+}

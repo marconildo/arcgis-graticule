@@ -410,6 +410,10 @@ define([
         });
     }
 
+    function drawGzd(ctx, state, srWGS84, extent, options, zoom) {
+
+    }
+
     function getVizGzds(extent) {
         const nw = extent.center;
         const ne = new Point(extent.xmax, extent.ymax, extent.spatialReference);

@@ -1,6 +1,6 @@
 
 define([
-  '../src/utils/mgrs.js'
+  '../src/mgrs/mgrs.js'
 ], function (mgrs) {
   const a = 6378137.0; //ellip.radius;
   const eccSquared = 0.00669438; //ellip.eccsq;

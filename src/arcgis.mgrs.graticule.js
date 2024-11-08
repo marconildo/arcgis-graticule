@@ -8,8 +8,8 @@ define([
     "esri/views/2d/layers/BaseLayerView2D",
     "esri/geometry/SpatialReference",
     "esri/geometry/projection",
-    "../src/utils/commonUtils.js",
-    "../src/utils/coordinates.js",
+    "../src/mgrs/commonUtils.js",
+    "../src/mgrs/coordinates.js",
 ], function (
     Layer,
     Point,
@@ -22,6 +22,9 @@ define([
     commonUtils,
     coordinates
 ) {
+    this.currLatInterval = 8;
+    this.currLngInterval = 6;
+
     const SW_INDEX = 0;
     const NW_INDEX = 1;
     const NE_INDEX = 2;
@@ -46,7 +49,11 @@ define([
             const state = renderParameters.state;
             const ctx = renderParameters.context;
             const options = this.layer.options;
+            const canvas = ctx.canvas;
 
+            const mapLeftTop = this.view.toMap([0, 0]);
+            canvas.style['transform'] = `translate3d(${mapLeftTop.x}px,${mapLeftTop.y}px,0)`;
+            
             projection.load();
 
             const extent = this.view.extent;
@@ -70,12 +77,8 @@ define([
                 mgrsGridInterval = 100000; //100km
             }
 
-            if (!mgrsGridInterval) {
-                return;
-            }
-
             drawGrid(ctx, state, srWGS84, extentWGS84, mgrsGridInterval, options, zoom);
-            drawGzd(ctx, state, srWGS84, extentWGS84, options, zoom);
+            drawGzd(ctx, this.view, state, srWGS84, options, zoom);
         },
         detach() {
         }
@@ -92,7 +95,7 @@ define([
                     color: '#888888',
                     font: '14px Courier New',
                     fontColor: '#ffffff',
-                    dashArray: [6, 6],
+                    dashArray: [4, 4],
                     weight: 1.5,
                     gridColor: '#000000',
                     hkColor: '#990000',
@@ -128,6 +131,7 @@ define([
         ctx.lineWidth = options.weight;
         ctx.strokeStyle = options.color;
         ctx.fillStyle = options.color;
+        ctx.lineCap = 'round';
         ctx.setLineDash(options.dashArray);
         ctx.font = options.font;
 
@@ -410,12 +414,387 @@ define([
         });
     }
 
-    function drawGzd(ctx, state, srWGS84, extent, options, zoom) {
+    function drawGzd(ctx, view, state, srWGS84, options, zoom) {
+        if (!ctx) {
+            return;
+        }
 
+        if (zoom < options.minZoom) {
+            return;
+        }
+
+        ctx.lineWidth = options.weight;
+        ctx.strokeStyle = options.color;
+        ctx.fillStyle = options.color;
+        ctx.setLineDash(options.dashArray);
+        if (options.font) {
+            ctx.font = options.font;
+        }
+
+        let leftTop = view.toMap({ x: 0, y: 0 });
+        let rightBottom = view.toMap({ x: view.width, y: view.height });
+
+        let pointPerLat = (leftTop.latitude - rightBottom.latitude) / (view.height * 0.2);
+        let pointPerLon = (rightBottom.longitude - leftTop.longitude) / (view.width * 0.2);
+
+        if (isNaN(pointPerLat) || isNaN(pointPerLon)) {
+            return;
+        }
+
+        if (pointPerLat < 1) {
+            pointPerLat = 1;
+        }
+        if (pointPerLon < 1) {
+            pointPerLon = 1;
+        }
+
+        if (rightBottom.latitude < -90) {
+            rightBottom.latitude = -90;
+        } else {
+            rightBottom.latitude = parseInt(rightBottom.latitude - pointPerLat, 10);
+        }
+
+        if (leftTop.latitude > 90) {
+            leftTop.latitude = 90;
+        } else {
+            leftTop.latitude = parseInt(leftTop.latitude + pointPerLat, 10);
+        }
+
+        if (leftTop.longitude > 0 && rightBottom.longitude < 0) {
+            rightBottom.longitude += 360;
+        }
+        rightBottom.longitude = parseInt(rightBottom.longitude + pointPerLon, 10);
+        leftTop.longitude = parseInt(leftTop.longitude - pointPerLon, 10);
+
+        // Northern hemisphere
+        for (let i = this.currLatInterval; i <= leftTop.latitude; i += this.currLatInterval) {
+            if (i >= rightBottom.latitude) {
+                if (i === 80) {
+                    i = 84;
+                }
+                drawLatitudeLine(ctx, i, leftTop.longitude, rightBottom.longitude, state, srWGS84);
+            }
+        }
+
+        // Southern hemisphere
+        for (let i = 0; i >= rightBottom.latitude; i -= this.currLatInterval) {
+            if (i <= leftTop.latitude) {
+                drawLatitudeLine(ctx, i, leftTop.longitude, rightBottom.longitude, state, srWGS84);
+            }
+        }
+
+        // HACK - Add six to the right bottom lng to make sure the East 31V boundary is displayed at all times
+        for (let i = -180; i <= rightBottom.longitude + 6; i += this.currLngInterval) {
+            drawLongitudeLine(ctx, options, i, leftTop.latitude, rightBottom.latitude, state, srWGS84);
+        }
+    }
+
+    function drawLatitudeLine(ctx, tick, lngLeft, lngRight, state, srWGS84) {
+        const leftEnd = latLngToContainerPoint({
+            lat: tick,
+            lng: lngLeft,
+        }, state, srWGS84);
+
+        const rightEnd = latLngToContainerPoint({
+            lat: tick,
+            lng: lngRight,
+        }, state, srWGS84);
+
+        ctx.beginPath();
+        ctx.moveTo(leftEnd.x, leftEnd.y);
+        ctx.lineTo(rightEnd.x, rightEnd.y);
+        ctx.stroke();
+    }
+
+    function drawLongitudeLine(ctx, options, tick, latTop, latBottom, state, srWGS84) {
+        if (latTop >= 84) {
+            latTop = 84; // Ensure GZD vertical lines do not extend into the arctic
+        }
+
+        if (latBottom <= -80) {
+            latBottom = -80; // Ensure GZD vertical lines do not extend into the antarctic
+        }
+
+        const canvasTop = latLngToContainerPoint({
+            lat: latTop,
+            lng: tick,
+        }, state, srWGS84);
+
+        const canvasBottom = latLngToContainerPoint({
+            lat: latBottom,
+            lng: tick,
+        }, state, srWGS84);
+
+        const TOP_OF_W_SERIES_GZD = 72;
+
+        ctx.beginPath();
+        // Handle Norway
+        if (tick === 6) {
+            const TOP_OF_V_SERIES_GZD = 64;
+            const BOTTOM_OF_V_SERIES_GZD = 56;
+            const RIGHT_OF_31_SERIES_GZD = 3;
+
+            const RIGHT_TOP_OF_GZD = latLngToContainerPoint({
+                lat: TOP_OF_V_SERIES_GZD,
+                lng: tick,
+            }, state, srWGS84);
+
+            const LEFT_TOP_OF_GZD = latLngToContainerPoint({
+                lat: TOP_OF_V_SERIES_GZD,
+                lng: RIGHT_OF_31_SERIES_GZD,
+            }, state, srWGS84);
+
+            const LEFT_BOTTOM_OF_GZD = latLngToContainerPoint({
+                lat: BOTTOM_OF_V_SERIES_GZD,
+                lng: RIGHT_OF_31_SERIES_GZD,
+            }, state, srWGS84);
+
+            const RIGHT_BOTTOM_OF_GZD = latLngToContainerPoint({
+                lat: BOTTOM_OF_V_SERIES_GZD,
+                lng: tick,
+            }, state, srWGS84);
+
+            if (latTop > TOP_OF_V_SERIES_GZD && latBottom > BOTTOM_OF_V_SERIES_GZD) {
+                // Top segment only
+                // Do not draw through Svalbard
+                if (latTop > TOP_OF_W_SERIES_GZD) {
+                    const TOP_LEFT_OF_32_SERIES_GZD = latLngToContainerPoint({
+                        lat: TOP_OF_W_SERIES_GZD,
+                        lng: tick,
+                    }, state, srWGS84);
+                    ctx.moveTo(TOP_LEFT_OF_32_SERIES_GZD.x, TOP_LEFT_OF_32_SERIES_GZD.y);
+                } else {
+                    ctx.moveTo(canvasTop.x, canvasTop.y);
+                }
+
+                ctx.lineTo(RIGHT_TOP_OF_GZD.x, RIGHT_TOP_OF_GZD.y);
+
+                ctx.moveTo(LEFT_TOP_OF_GZD.x, LEFT_TOP_OF_GZD.y);
+
+                ctx.lineTo(LEFT_TOP_OF_GZD.x, canvasBottom.y);
+            } else if (
+                //Bottom segment only
+                latTop < TOP_OF_V_SERIES_GZD &&
+                latBottom < BOTTOM_OF_V_SERIES_GZD
+            ) {
+                ctx.moveTo(LEFT_TOP_OF_GZD.x, canvasTop.y);
+
+                ctx.lineTo(LEFT_BOTTOM_OF_GZD.x, LEFT_BOTTOM_OF_GZD.y);
+
+                ctx.moveTo(RIGHT_BOTTOM_OF_GZD.x, RIGHT_BOTTOM_OF_GZD.y);
+
+                ctx.lineTo(RIGHT_BOTTOM_OF_GZD.x, canvasBottom.y);
+            } else if (
+                // Entire thing
+                latTop >= TOP_OF_V_SERIES_GZD &&
+                latBottom <= BOTTOM_OF_V_SERIES_GZD
+            ) {
+                // Do not draw through Svalbard
+                if (latTop > TOP_OF_W_SERIES_GZD) {
+                    const TOP_LEFT_OF_32_SERIES_GZD = latLngToContainerPoint({
+                        lat: TOP_OF_W_SERIES_GZD,
+                        lng: tick,
+                    }, state, srWGS84);
+                    ctx.moveTo(TOP_LEFT_OF_32_SERIES_GZD.x, TOP_LEFT_OF_32_SERIES_GZD.y);
+                } else {
+                    ctx.moveTo(canvasTop.x, canvasTop.y);
+                }
+
+                ctx.lineTo(RIGHT_TOP_OF_GZD.x, RIGHT_TOP_OF_GZD.y);
+
+                ctx.moveTo(LEFT_TOP_OF_GZD.x, LEFT_TOP_OF_GZD.y);
+
+                ctx.lineTo(LEFT_BOTTOM_OF_GZD.x, LEFT_BOTTOM_OF_GZD.y);
+
+                ctx.moveTo(RIGHT_TOP_OF_GZD.x, LEFT_BOTTOM_OF_GZD.y);
+
+                ctx.lineTo(RIGHT_TOP_OF_GZD.x, canvasBottom.y);
+            } else if (
+                // Modified vertical only
+                latTop <= TOP_OF_V_SERIES_GZD &&
+                latBottom >= BOTTOM_OF_V_SERIES_GZD
+            ) {
+                ctx.moveTo(LEFT_TOP_OF_GZD.x, canvasTop.y);
+
+                ctx.lineTo(LEFT_BOTTOM_OF_GZD.x, canvasBottom.y);
+            }
+        } else if (tick === 12) {
+            if (latTop > TOP_OF_W_SERIES_GZD && latTop <= 84) {
+                // Handle Svalbard
+                const TOP_LEFT_OF_33X_GZD = latLngToContainerPoint({
+                    lat: latTop,
+                    lng: 9,
+                }, state, srWGS84);
+                ctx.moveTo(TOP_LEFT_OF_33X_GZD.x, TOP_LEFT_OF_33X_GZD.y);
+
+                const BOTTOM_LEFT_OF_33X_GZD = latLngToContainerPoint({
+                    lat: TOP_OF_W_SERIES_GZD,
+                    lng: 9,
+                }, state, srWGS84);
+
+                ctx.lineTo(BOTTOM_LEFT_OF_33X_GZD.x, BOTTOM_LEFT_OF_33X_GZD.y);
+
+                const TOP_RIGHT_OF_32W_GZD = latLngToContainerPoint({
+                    lat: TOP_OF_W_SERIES_GZD,
+                    lng: tick,
+                }, state, srWGS84);
+
+                ctx.moveTo(TOP_RIGHT_OF_32W_GZD.x, TOP_RIGHT_OF_32W_GZD.y);
+
+                ctx.lineTo(canvasBottom.x, canvasBottom.y);
+            } else {
+                // Normal use case
+                ctx.moveTo(canvasTop.x, canvasTop.y);
+                ctx.lineTo(canvasBottom.x, canvasBottom.y);
+            }
+        } else if (tick === 18) {
+            // Do not draw through Svalbard
+            if (latTop > TOP_OF_W_SERIES_GZD) {
+                const TOP_LEFT_OF_34_SERIES_GZD = latLngToContainerPoint({
+                    lat: TOP_OF_W_SERIES_GZD,
+                    lng: tick,
+                }, state, srWGS84);
+                ctx.moveTo(TOP_LEFT_OF_34_SERIES_GZD.x, TOP_LEFT_OF_34_SERIES_GZD.y);
+            } else {
+                ctx.moveTo(canvasTop.x, canvasTop.y);
+            }
+            ctx.lineTo(canvasBottom.x, canvasBottom.y);
+        } else if (tick === 24) {
+            if (latTop > TOP_OF_W_SERIES_GZD && latTop <= 84) {
+                // Handle Svalbard
+                const TOP_LEFT_OF_35X_GZD = latLngToContainerPoint({
+                    lat: latTop,
+                    lng: 21,
+                }, state, srWGS84);
+                ctx.moveTo(TOP_LEFT_OF_35X_GZD.x, TOP_LEFT_OF_35X_GZD.y);
+
+                const BOTTOM_LEFT_OF_35X_GZD = latLngToContainerPoint({
+                    lat: TOP_OF_W_SERIES_GZD,
+                    lng: 21,
+                }, state, srWGS84);
+
+                ctx.lineTo(BOTTOM_LEFT_OF_35X_GZD.x, BOTTOM_LEFT_OF_35X_GZD.y);
+
+                const TOP_RIGHT_OF_34W_GZD = latLngToContainerPoint({
+                    lat: TOP_OF_W_SERIES_GZD,
+                    lng: tick,
+                }, state, srWGS84);
+
+                ctx.moveTo(TOP_RIGHT_OF_34W_GZD.x, TOP_RIGHT_OF_34W_GZD.y);
+
+                ctx.lineTo(canvasBottom.x, canvasBottom.y);
+            } else {
+                // Normal use case
+                ctx.moveTo(canvasTop.x, canvasTop.y);
+                ctx.lineTo(canvasBottom.x, canvasBottom.y);
+            }
+        } else if (tick === 30) {
+            // Do not draw through Svalbard
+            if (latTop > TOP_OF_W_SERIES_GZD) {
+                const TOP_LEFT_OF_35_SERIES_GZD = latLngToContainerPoint({
+                    lat: TOP_OF_W_SERIES_GZD,
+                    lng: tick,
+                }, state, srWGS84);
+                ctx.moveTo(TOP_LEFT_OF_35_SERIES_GZD.x, TOP_LEFT_OF_35_SERIES_GZD.y);
+            } else {
+                ctx.moveTo(canvasTop.x, canvasTop.y);
+            }
+            ctx.lineTo(canvasBottom.x, canvasBottom.y);
+        } else if (tick === 36) {
+            if (latTop > TOP_OF_W_SERIES_GZD && latTop <= 84) {
+                // Handle Svalbard
+                const TOP_LEFT_OF_37X_GZD = latLngToContainerPoint({
+                    lat: latTop,
+                    lng: 33,
+                }, state, srWGS84);
+                ctx.moveTo(TOP_LEFT_OF_37X_GZD.x, TOP_LEFT_OF_37X_GZD.y);
+
+                const BOTTOM_LEFT_OF_37X_GZD = latLngToContainerPoint({
+                    lat: TOP_OF_W_SERIES_GZD,
+                    lng: 33,
+                }, state, srWGS84);
+
+                ctx.lineTo(BOTTOM_LEFT_OF_37X_GZD.x, BOTTOM_LEFT_OF_37X_GZD.y);
+
+                const TOP_RIGHT_OF_36W_GZD = latLngToContainerPoint({
+                    lat: TOP_OF_W_SERIES_GZD,
+                    lng: tick,
+                }, state, srWGS84);
+
+                ctx.moveTo(TOP_RIGHT_OF_36W_GZD.x, TOP_RIGHT_OF_36W_GZD.y);
+
+                ctx.lineTo(canvasBottom.x, canvasBottom.y);
+            } else {
+                // Normal use case
+                ctx.moveTo(canvasTop.x, canvasTop.y);
+                ctx.lineTo(canvasBottom.x, canvasBottom.y);
+            }
+        } else {
+            ctx.moveTo(canvasTop.x, canvasTop.y);
+            ctx.lineTo(canvasBottom.x, canvasBottom.y);
+        }
+        ctx.stroke();
+        drawGzdLabels(tick, ctx, options, state, srWGS84);
+    }
+
+    function drawGzdLabels(longitude, ctx, options, state, srWGS84) {
+        for (let labelLatitude = -76; labelLatitude < 84; labelLatitude += 8) {
+            let labelLongitude;
+            if (labelLatitude === 60) {
+                if (longitude === 0) {
+                    //31V
+                    labelLongitude = 1.5;
+                } else if (longitude === 6) {
+                    //32V
+                    labelLongitude = 7.5;
+                } else {
+                    labelLongitude = longitude + 3;
+                }
+            } else if (labelLatitude === 76) {
+                if (longitude === 0) {
+                    //31X
+                    labelLongitude = 4.5;
+                } else if (longitude === 12) {
+                    //33X
+                    labelLongitude = 15;
+                } else if (longitude === 24) {
+                    //35X
+                    labelLongitude = 27;
+                } else if (longitude === 36) {
+                    //37X
+                    labelLongitude = 37.5;
+                } else {
+                    labelLongitude = longitude + 3;
+                }
+            } else {
+                // Rest of the world...
+                labelLongitude = longitude + 3;
+            }
+
+            let gzdLabel;
+            try {
+                gzdLabel = coordinates.llToMgrs([labelLongitude, labelLatitude], 1).match(MGRS_REGEX)[GZD_INDEX];
+            } catch (error) {
+                return; //Invalid MGRS value returned, so no need to try to display a label
+            }
+
+            if (
+                !(gzdLabel === '33X' && longitude === 6) &&
+                !(gzdLabel === '35X' && longitude === 18) &&
+                !(gzdLabel === '37X' && longitude === 30)
+            ) {
+                const labelXy = latLngToContainerPoint({
+                    lat: labelLatitude,
+                    lng: labelLongitude,
+                }, state, srWGS84);
+
+                commonUtils.drawLabel(ctx, gzdLabel, options.fontColor, options.color, labelXy);
+            }
+        }
     }
 
     function getVizGzds(extent) {
-        const nw = extent.center;
+        const nw = new Point(extent.xmin, extent.ymax, extent.spatialReference);
         const ne = new Point(extent.xmax, extent.ymax, extent.spatialReference);
         const se = new Point(extent.xmax, extent.ymin, extent.spatialReference);
         const sw = new Point(extent.xmin, extent.ymin, extent.spatialReference);
@@ -472,16 +851,19 @@ define([
 
     function drawLine(ctx, notHkLine, options) {
         if (notHkLine) {
-            ctx.setLineDash(options.gridDashArray);
-            ctx.lineWidth = options.weight + 1;
-            ctx.strokeStyle = options.gridFontColor;
-            ctx.stroke();
+            //  ctx.setLineDash(options.gridDashArray);
+            //  ctx.lineWidth = options.weight + 1;
+            //  ctx.lineCap = 'round';
+            //  ctx.strokeStyle = options.gridFontColor;
+            //  ctx.stroke();
             ctx.lineWidth = options.weight;
+            ctx.lineCap = 'round';
             ctx.strokeStyle = options.gridColor;
             ctx.stroke();
         } else {
             ctx.lineWidth = options.weight;
             ctx.strokeStyle = options.hkColor;
+            ctx.lineCap = 'round';
             ctx.setLineDash(options.hkDashArray);
             ctx.stroke();
         }

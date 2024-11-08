@@ -30,18 +30,26 @@
       require([
         "esri/Map",
         "esri/views/MapView",
-        "../src/arcgis.mgrs.graticule.js"
-      ], function (Map, MapView, MgrsGraticuleLayer) {
+        "esri/widgets/CoordinateConversion",
+        "../src/arcgis.mgrs.graticule.js",
+      ], function (Map, MapView, CoordinateConversion, MgrsGraticuleLayer) {
         const map = new Map({
-          basemap: "streets"
+          basemap: "satellite"
         });
 
         const view = new MapView({
           container: "viewDiv",
           map: map,
-          center: [ 6.993747, 50.51006],
-          zoom: 14
+          center: [0.27948797422108584, 40.743219584250525],
+          zoom: 7
         });
+
+        const ccWidget = new CoordinateConversion({
+          view: view,
+          defaultPattern: "mgrs",
+        });
+
+        view.ui.add(ccWidget, "bottom-left");
 
         var customLayer = new MgrsGraticuleLayer();
         map.add(customLayer);

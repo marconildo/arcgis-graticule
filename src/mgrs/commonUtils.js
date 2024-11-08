@@ -1,5 +1,5 @@
 define([
-  '../src/utils/mgrs.js'
+  '../src/mgrs/mgrs.js'
 ], function (mgrs) {
   
   const SW_INDEX = 0;
